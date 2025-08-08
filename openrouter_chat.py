@@ -3,9 +3,11 @@ import os
 import sys
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from openrouter_chat import chat_from_local_prompts
+
 import httpx
 from dotenv import load_dotenv
+from telegram import Bot
+from telegram.error import TelegramError
 
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -65,6 +67,49 @@ def send_chat_request(
         return data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError):
         raise RuntimeError(f"Unexpected API response format: {data}")
+
+
+def send_to_telegram(text: str, bot_token: str, chat_id: str, send_as_document: bool = False) -> bool:
+    """Send text to Telegram bot. Returns True if successful, False otherwise."""
+    try:
+        bot = Bot(token=bot_token)
+        
+        if send_as_document:
+            # Create temporary file for document
+            temp_filename = f"ai_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(temp_filename, "w", encoding="utf-8") as f:
+                f.write(text)
+            
+            try:
+                with open(temp_filename, "rb") as doc:
+                    bot.send_document(
+                        chat_id=chat_id,
+                        document=doc,
+                        filename=f"ai_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                    )
+                return True
+            finally:
+                # Clean up temporary file
+                if os.path.exists(temp_filename):
+                    os.remove(temp_filename)
+        else:
+            # Send as message (split if too long)
+            max_length = 4096
+            if len(text) <= max_length:
+                bot.send_message(chat_id=chat_id, text=text)
+            else:
+                # Split long messages
+                parts = [text[i:i+max_length] for i in range(0, len(text), max_length)]
+                for i, part in enumerate(parts):
+                    bot.send_message(chat_id=chat_id, text=f"Part {i+1}/{len(parts)}:\n\n{part}")
+            return True
+            
+    except TelegramError as e:
+        log_message(f"Telegram error: {e}")
+        return False
+    except Exception as e:
+        log_message(f"Unexpected error sending to Telegram: {e}")
+        return False
 
 
 def parse_price(value: Any) -> Optional[float]:
@@ -143,6 +188,8 @@ def chat_from_local_prompts(
     user_filename: str = "user_prompt.txt",
     temperature: Optional[float] = None,
     free_only: bool = False,
+    send_to_telegram: bool = True,
+    telegram_as_document: bool = False,
 ) -> str:
     """Load system/user prompts from files and send a chat completion to OpenRouter.
 
@@ -179,6 +226,21 @@ def chat_from_local_prompts(
             api_key=api_key,
             temperature=temperature,
         )
+        
+        # Send to Telegram first (if enabled)
+        if send_to_telegram:
+            bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+            if bot_token and chat_id:
+                telegram_success = send_to_telegram(reply, bot_token, chat_id, telegram_as_document)
+                if telegram_success:
+                    log_message(f"Successfully sent to Telegram")
+                else:
+                    log_message(f"Failed to send to Telegram")
+            else:
+                log_message(f"Telegram not configured: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+        
+        # Save locally
         save_text_with_timestamp(reply)
         return reply
     except httpx.HTTPStatusError as http_err:
@@ -198,6 +260,21 @@ def chat_from_local_prompts(
                 api_key=api_key,
                 temperature=temperature,
             )
+            
+            # Send to Telegram first (if enabled)
+            if send_to_telegram:
+                bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+                chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                if bot_token and chat_id:
+                    telegram_success = send_to_telegram(reply, bot_token, chat_id, telegram_as_document)
+                    if telegram_success:
+                        log_message(f"Successfully sent to Telegram (fallback)")
+                    else:
+                        log_message(f"Failed to send to Telegram (fallback)")
+                else:
+                    log_message(f"Telegram not configured: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+            
+            # Save locally
             save_text_with_timestamp(reply)
             return reply
         else:
@@ -244,6 +321,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--free-only",
         action="store_true",
         help="Automatically choose a free model and use it for this request",
+    )
+    parser.add_argument(
+        "--no-telegram",
+        action="store_true",
+        help="Disable sending to Telegram bot",
+    )
+    parser.add_argument(
+        "--telegram-document",
+        action="store_true",
+        help="Send to Telegram as document instead of message",
     )
     return parser.parse_args(argv)
 
@@ -309,6 +396,8 @@ def main(argv: list[str]) -> int:
             user_filename=args.user,
             temperature=args.temperature,
             free_only=False,
+            send_to_telegram=not args.no_telegram,
+            telegram_as_document=args.telegram_document,
         )
     except httpx.HTTPStatusError as http_err:
         if http_err.response is not None and http_err.response.status_code == 402:
@@ -327,6 +416,8 @@ def main(argv: list[str]) -> int:
                             user_filename=args.user,
                             temperature=args.temperature,
                             free_only=True,
+                            send_to_telegram=not args.no_telegram,
+                            telegram_as_document=args.telegram_document,
                         )
                         print(reply)
                         return 0
