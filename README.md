@@ -59,6 +59,7 @@ Arguments:
 - The script reads the entire contents of both files and sends them as messages:
   - System message: contents of `system_prompt.txt`
   - User message: contents of `user_prompt.txt`
+- If `user_prompt.txt` is missing, the system prompt is treated as the user message.
 - The response assistant message is printed to stdout.
 - Every successful response is sent to Telegram (if configured) and saved into `generated_texts/` with a timestamped filename like `YYYY-MM-DD_HH-MM-SS.txt`.
 - Fallback attempts and errors are logged to `logs.txt` for debugging.

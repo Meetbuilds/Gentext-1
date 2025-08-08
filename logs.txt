@@ -1,0 +1,14 @@
+[2025-08-08_21-12-00] Telegram not configured: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID
+[2025-08-08_21-16-03] Telegram not configured: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID
+[2025-08-08_21-16-23] Telegram not configured: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID
+[2025-08-08_21-21-12] Telegram not configured: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID
+[2025-08-08_21-23-40] HTTP error: Client error '429 Too Many Requests' for url 'https://openrouter.ai/api/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+[2025-08-08_21-32-18] Retryable HTTP error 429; backing off and retrying (attempt 2/5)
+[2025-08-08_21-32-23] Retryable HTTP error 429; backing off and retrying (attempt 3/5)
+[2025-08-08_21-32-28] Retryable HTTP error 429; backing off and retrying (attempt 4/5)
+[2025-08-08_21-32-36] Retryable HTTP error 429; backing off and retrying (attempt 5/5)
+[2025-08-08_21-32-49] HTTP error: Client error '429 Too Many Requests' for url 'https://openrouter.ai/api/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+[2025-08-08_21-40-51] HTTP error: Client error '401 Unauthorized' for url 'https://openrouter.ai/api/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401

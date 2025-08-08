@@ -1,0 +1,1 @@
+OpenRouter API allows you to access a variety of language models through a single API key, optimizing costs by dynamically routing requests to the cheapest available model. This simplifies model management and provides a hedge against vendor lock-in, ensuring flexibility and potential savings.

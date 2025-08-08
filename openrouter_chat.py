@@ -3,6 +3,8 @@ import os
 import sys
 from datetime import datetime
 from typing import Optional, List, Dict, Any
+import time
+import random
 
 import httpx
 from dotenv import load_dotenv
@@ -20,19 +22,45 @@ def read_text_file(file_path: str) -> str:
         return f.read().strip()
 
 
-def build_headers(api_key: Optional[str]) -> dict:
+def build_headers(api_key: Optional[str], provider: str) -> dict:
     headers = {
         "Content-Type": "application/json",
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    site_url = os.getenv("OPENROUTER_SITE_URL")
-    app_name = os.getenv("OPENROUTER_APP_NAME")
-    if site_url:
-        headers["HTTP-Referer"] = site_url
-    if app_name:
-        headers["X-Title"] = app_name
+    if provider == "openrouter":
+        site_url = os.getenv("OPENROUTER_SITE_URL")
+        app_name = os.getenv("OPENROUTER_APP_NAME")
+        if site_url:
+            headers["HTTP-Referer"] = site_url
+        if app_name:
+            headers["X-Title"] = app_name
     return headers
+
+
+def get_api_url(provider: str) -> str:
+    if provider == "deepseek":
+        return "https://api.deepseek.com/v1/chat/completions"
+    # default to openrouter
+    return "https://openrouter.ai/api/v1/chat/completions"
+
+
+def get_api_key(provider: str) -> Optional[str]:
+    if provider == "deepseek":
+        return os.getenv("DEEPSEEK_API_KEY")
+    return os.getenv("OPENROUTER_API_KEY")
+
+
+def resolve_provider(arg_provider: Optional[str]) -> str:
+    if arg_provider and arg_provider in {"openrouter", "deepseek"}:
+        return arg_provider
+    # auto mode
+    if os.getenv("OPENROUTER_API_KEY"):
+        return "openrouter"
+    if os.getenv("DEEPSEEK_API_KEY"):
+        return "deepseek"
+    # default
+    return "openrouter"
 
 
 def create_client(timeout_seconds: int = 120) -> httpx.Client:
@@ -46,30 +74,83 @@ def send_chat_request(
     api_key: str,
     temperature: Optional[float] = None,
 ) -> str:
+    messages = [
+        {"role": "system", "content": system_text},
+        {"role": "user", "content": user_text},
+    ]
+    return send_chat_request_with_messages(model, messages, api_key, temperature)
+
+
+def _should_retry(status_code: Optional[int], exception: Exception) -> bool:
+    retryable_status = {429, 408, 500, 502, 503, 504}
+    if status_code is not None and status_code in retryable_status:
+        return True
+    # Network-level issues
+    if isinstance(exception, (
+        httpx.TimeoutException,
+        httpx.ReadError,
+        httpx.NetworkError,
+        httpx.ConnectError,
+        httpx.RemoteProtocolError,
+    )):
+        return True
+    return False
+
+
+def _sleep_backoff(attempt_index: int, base: float = 1.0, cap: float = 20.0) -> None:
+    delay = min(cap, base * (2 ** attempt_index))
+    # Add jitter [0.5, 1.5) multiplier
+    jitter = 0.5 + random.random()
+    time.sleep(delay * jitter)
+
+
+def send_chat_request_with_messages(
+    model: str,
+    messages: List[Dict[str, str]],
+    api_key: str,
+    temperature: Optional[float] = None,
+    provider: str = "openrouter",
+) -> str:
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system_text},
-            {"role": "user", "content": user_text},
-        ],
+        "messages": messages,
     }
     if temperature is not None:
         payload["temperature"] = temperature
 
-    headers = build_headers(api_key)
+    api_url = get_api_url(provider)
+    headers = build_headers(api_key, provider)
 
+    max_attempts = 5
     with create_client() as client:
-        response = client.post(API_URL, headers=headers, json=payload)
-        response.raise_for_status()
-        data = response.json()
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_attempts):
+            try:
+                response = client.post(api_url, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"].strip()
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code if e.response is not None else None
+                if attempt < max_attempts - 1 and _should_retry(status, e):
+                    log_message(f"Retryable HTTP error {status}; backing off and retrying (attempt {attempt+2}/{max_attempts})")
+                    _sleep_backoff(attempt)
+                    continue
+                last_exc = e
+                break
+            except Exception as e:
+                if attempt < max_attempts - 1 and _should_retry(None, e):
+                    log_message(f"Retryable network error; backing off and retrying (attempt {attempt+2}/{max_attempts}) - {e}")
+                    _sleep_backoff(attempt)
+                    continue
+                last_exc = e
+                break
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Failed to send chat request for unknown reasons")
 
-    try:
-        return data["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, TypeError):
-        raise RuntimeError(f"Unexpected API response format: {data}")
 
-
-def send_to_telegram(text: str, bot_token: str, chat_id: str, send_as_document: bool = False) -> bool:
+def send_text_to_telegram(text: str, bot_token: str, chat_id: str, send_as_document: bool = False) -> bool:
     """Send text to Telegram bot. Returns True if successful, False otherwise."""
     try:
         bot = Bot(token=bot_token)
@@ -136,7 +217,7 @@ def is_free_model(model_obj: Dict[str, Any]) -> bool:
 
 def fetch_free_models(api_key: Optional[str]) -> List[Dict[str, Any]]:
     url = "https://openrouter.ai/api/v1/models"
-    headers = build_headers(api_key)
+    headers = build_headers(api_key, "openrouter")
     with create_client() as client:
         resp = client.get(url, headers=headers)
         resp.raise_for_status()
@@ -188,13 +269,14 @@ def chat_from_local_prompts(
     user_filename: str = "user_prompt.txt",
     temperature: Optional[float] = None,
     free_only: bool = False,
-    send_to_telegram: bool = True,
+    send_to_telegram_enabled: bool = True,
     telegram_as_document: bool = False,
+    provider: Optional[str] = None,
 ) -> str:
     """Load system/user prompts from files and send a chat completion to OpenRouter.
 
     Raises:
-        FileNotFoundError: If either prompt file is missing
+        FileNotFoundError: If system prompt file is missing
         RuntimeError: If env var OPENROUTER_API_KEY is missing or API response is invalid
         httpx.HTTPError: For network/HTTP errors
     """
@@ -204,14 +286,29 @@ def chat_from_local_prompts(
     user_path = os.path.join(directory, user_filename)
 
     system_text = read_text_file(system_path)
-    user_text = read_text_file(user_path)
+    
+    # Check if user prompt file exists
+    if os.path.exists(user_path):
+        user_text = read_text_file(user_path)
+        # Use both system and user prompts
+        messages = [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_text},
+        ]
+    else:
+        # Only system prompt exists, treat it as user message
+        user_text = system_text
+        messages = [
+            {"role": "user", "content": user_text},
+        ]
 
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    prov = resolve_provider(provider)
+    api_key = get_api_key(prov)
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY is not set in the environment")
+        raise RuntimeError(f"API key not set for provider: {prov}")
 
     selected_model = model
-    if free_only:
+    if free_only and prov == "openrouter":
         free_models = fetch_free_models(api_key)
         chosen = choose_best_free_model(free_models)
         if not chosen:
@@ -219,20 +316,20 @@ def chat_from_local_prompts(
         selected_model = chosen
 
     try:
-        reply = send_chat_request(
+        reply = send_chat_request_with_messages(
             model=selected_model,
-            system_text=system_text,
-            user_text=user_text,
+            messages=messages,
             api_key=api_key,
             temperature=temperature,
+            provider=prov,
         )
         
         # Send to Telegram first (if enabled)
-        if send_to_telegram:
+        if send_to_telegram_enabled:
             bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
             chat_id = os.getenv("TELEGRAM_CHAT_ID")
             if bot_token and chat_id:
-                telegram_success = send_to_telegram(reply, bot_token, chat_id, telegram_as_document)
+                telegram_success = send_text_to_telegram(reply, bot_token, chat_id, telegram_as_document)
                 if telegram_success:
                     log_message(f"Successfully sent to Telegram")
                 else:
@@ -244,8 +341,8 @@ def chat_from_local_prompts(
         save_text_with_timestamp(reply)
         return reply
     except httpx.HTTPStatusError as http_err:
-        if http_err.response is not None and http_err.response.status_code == 402 and not free_only:
-            # Attempt automatic fallback to a free model
+        if http_err.response is not None and http_err.response.status_code == 402 and not free_only and prov == "openrouter":
+            # Attempt automatic fallback to a free model (only for OpenRouter)
             log_message(f"402 error with model {selected_model}, attempting free model fallback")
             free_models = fetch_free_models(api_key)
             chosen = choose_best_free_model(free_models)
@@ -253,20 +350,20 @@ def chat_from_local_prompts(
                 log_message(f"Free model fallback failed: no suitable model found")
                 raise
             log_message(f"Retrying with free model: {chosen}")
-            reply = send_chat_request(
+            reply = send_chat_request_with_messages(
                 model=chosen,
-                system_text=system_text,
-                user_text=user_text,
+                messages=messages,
                 api_key=api_key,
                 temperature=temperature,
+                provider=prov,
             )
             
             # Send to Telegram first (if enabled)
-            if send_to_telegram:
+            if send_to_telegram_enabled:
                 bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
                 chat_id = os.getenv("TELEGRAM_CHAT_ID")
                 if bot_token and chat_id:
-                    telegram_success = send_to_telegram(reply, bot_token, chat_id, telegram_as_document)
+                    telegram_success = send_text_to_telegram(reply, bot_token, chat_id, telegram_as_document)
                     if telegram_success:
                         log_message(f"Successfully sent to Telegram (fallback)")
                     else:
@@ -332,6 +429,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Send to Telegram as document instead of message",
     )
+    parser.add_argument(
+        "--provider",
+        choices=["openrouter", "deepseek"],
+        help="API provider to use. If omitted, auto-detects based on available API keys.",
+    )
     return parser.parse_args(argv)
 
 
@@ -376,17 +478,20 @@ def main(argv: list[str]) -> int:
 
     # Determine model selection strategy
     selected_model = args.model
+    api_key = get_api_key(resolve_provider(args.provider))
     if args.free_only:
-        try:
-            free_models = fetch_free_models(api_key)
-            chosen = choose_best_free_model(free_models)
-            if not chosen:
-                print("No free models available to select.", file=sys.stderr)
-                return 1
-            selected_model = chosen
-        except httpx.HTTPError as http_err:
-            print(f"Could not fetch free models: {http_err}", file=sys.stderr)
-            return 2
+        prov = resolve_provider(args.provider)
+        if prov == "openrouter":
+            try:
+                free_models = fetch_free_models(api_key)
+                chosen = choose_best_free_model(free_models)
+                if not chosen:
+                    print("No free models available to select.", file=sys.stderr)
+                    return 1
+                selected_model = chosen
+            except httpx.HTTPError as http_err:
+                print(f"Could not fetch free models: {http_err}", file=sys.stderr)
+                return 2
 
     try:
         reply = chat_from_local_prompts(
@@ -396,8 +501,9 @@ def main(argv: list[str]) -> int:
             user_filename=args.user,
             temperature=args.temperature,
             free_only=False,
-            send_to_telegram=not args.no_telegram,
+            send_to_telegram_enabled=not args.no_telegram,
             telegram_as_document=args.telegram_document,
+            provider=args.provider,
         )
     except httpx.HTTPStatusError as http_err:
         if http_err.response is not None and http_err.response.status_code == 402:
@@ -416,8 +522,9 @@ def main(argv: list[str]) -> int:
                             user_filename=args.user,
                             temperature=args.temperature,
                             free_only=True,
-                            send_to_telegram=not args.no_telegram,
+                            send_to_telegram_enabled=not args.no_telegram,
                             telegram_as_document=args.telegram_document,
+                            provider=args.provider,
                         )
                         print(reply)
                         return 0
@@ -445,4 +552,3 @@ if __name__ == "__main__":
 
 
 
-5379011823
