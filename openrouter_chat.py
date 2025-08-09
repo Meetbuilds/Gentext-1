@@ -152,14 +152,16 @@ def _send_via_huggingface_with_retry(
         "inputs": prompt,
         "parameters": {
             "return_full_text": False,
-            "max_new_tokens": 512,
         },
         "options": {
-            "wait_for_model": True
+            "wait_for_model": True,
+            "use_cache": True
         }
     }
     if temperature is not None:
         payload["parameters"]["temperature"] = float(temperature)
+    # Reasonable default
+    payload["parameters"]["max_new_tokens"] = 512
 
     max_attempts = 5
     with create_client() as client:
@@ -178,11 +180,22 @@ def _send_via_huggingface_with_retry(
                 if isinstance(data, dict):
                     if "generated_text" in data:
                         return str(data["generated_text"]).strip()
+                    # Some models return {'error': '...'} with 200; treat as error
                     if "error" in data:
                         raise RuntimeError(f"Hugging Face error: {data['error']}")
                 raise RuntimeError(f"Unexpected Hugging Face response: {data}")
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code if e.response is not None else None
+                if status in (401, 403, 404):
+                    # Provide clearer guidance, don't retry these by default
+                    if status == 401:
+                        msg = "Hugging Face 401 Unauthorized: Check HUGGINGFACE_API_KEY in this shell."
+                    elif status == 403:
+                        msg = "Hugging Face 403 Forbidden: Accept model terms or ensure access."
+                    else:
+                        msg = "Hugging Face 404 Not Found: Model repo ID invalid or not served via serverless."
+                    log_message(msg)
+                    raise
                 if attempt < max_attempts - 1 and _should_retry(status, e):
                     log_message(f"HF retryable HTTP error {status}; retrying (attempt {attempt+2}/{max_attempts})")
                     _sleep_backoff(attempt)
@@ -616,7 +629,7 @@ if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
 
     
-
+S
 
 
 

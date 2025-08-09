@@ -26,3 +26,12 @@ For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/St
 For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
 [2025-08-09_12-56-44] HTTP error: Client error '401 Unauthorized' for url 'https://api-inference.huggingface.co/models/TinyLlama/TinyLlama-1.1B-Chat-v1.0'
 For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[2025-08-09_13-31-51] Hugging Face 401 Unauthorized: Check HUGGINGFACE_API_KEY in this shell.
+[2025-08-09_13-31-51] HTTP error: Client error '401 Unauthorized' for url 'https://api-inference.huggingface.co/models/gpt2'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[2025-08-09_13-38-55] Hugging Face 401 Unauthorized: Check HUGGINGFACE_API_KEY in this shell.
+[2025-08-09_13-38-55] HTTP error: Client error '401 Unauthorized' for url 'https://api-inference.huggingface.co/models/gpt2'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[2025-08-09_13-39-07] Hugging Face 401 Unauthorized: Check HUGGINGFACE_API_KEY in this shell.
+[2025-08-09_13-39-07] HTTP error: Client error '401 Unauthorized' for url 'https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
