@@ -147,12 +147,17 @@ def _send_via_huggingface_with_retry(
     messages: List[Dict[str, str]],
     api_key: str,
     temperature: Optional[float],
-) -> str:
+    ) -> str:
+
+    url = f"https://api-inference.huggingface.co/pipeline/text-generation/{model}"
+    headers = build_headers(api_key, "huggingface")
     prompt = _build_prompt_from_messages(messages)
+    
     payload: Dict[str, Any] = {
         "inputs": prompt,
         "parameters": {
             "return_full_text": False,
+            "max_new_tokens": 512,  
         },
         "options": {
             "wait_for_model": True,
@@ -163,6 +168,9 @@ def _send_via_huggingface_with_retry(
         payload["parameters"]["temperature"] = float(temperature)
     # Reasonable default
     payload["parameters"]["max_new_tokens"] = 512
+
+    # Debugging: Print the payload before sending
+    log_message(f"Sending HF payload: {payload}")
 
     max_attempts = 5
     
