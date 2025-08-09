@@ -38,13 +38,16 @@ def build_headers(api_key: Optional[str], provider: str) -> dict:
     return headers
 
 
-def get_api_url(provider: str, model: Optional[str] = None) -> str:
+def get_api_url(provider: str, model: Optional[str] = None, use_pipeline_endpoint: bool = True) -> str:
     if provider == "deepseek":
         return "https://api.deepseek.com/v1/chat/completions"
     if provider == "huggingface":
         if not model:
             raise ValueError("Model is required for Hugging Face requests")
-        return f"https://api-inference.huggingface.co/models/{model}"
+        if use_pipeline_endpoint:
+            return f"https://api-inference.huggingface.co/pipeline/text-generation/{model}"
+        else:
+            return f"https://api-inference.huggingface.co/models/{model}"
     # default to openrouter
     return "https://openrouter.ai/api/v1/chat/completions"
 
@@ -145,8 +148,6 @@ def _send_via_huggingface_with_retry(
     api_key: str,
     temperature: Optional[float],
 ) -> str:
-    url = get_api_url("huggingface", model)
-    headers = build_headers(api_key, "huggingface")
     prompt = _build_prompt_from_messages(messages)
     payload: Dict[str, Any] = {
         "inputs": prompt,
@@ -164,53 +165,60 @@ def _send_via_huggingface_with_retry(
     payload["parameters"]["max_new_tokens"] = 512
 
     max_attempts = 5
+    
+    # Try with pipeline endpoint first, then fall back to generic model endpoint on 404
+    endpoint_options = [True, False] # True for /pipeline/text-generation, False for /models
+
     with create_client() as client:
         last_exc: Optional[Exception] = None
-        for attempt in range(max_attempts):
-            try:
-                response = client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                data = response.json()
-                # Typical format: [{"generated_text": "..."}]
-                if isinstance(data, list) and data:
-                    first = data[0]
-                    if isinstance(first, dict) and "generated_text" in first:
-                        return str(first["generated_text"]).strip()
-                # Some endpoints might return dict
-                if isinstance(data, dict):
-                    if "generated_text" in data:
-                        return str(data["generated_text"]).strip()
-                    # Some models return {'error': '...'} with 200; treat as error
-                    if "error" in data:
-                        raise RuntimeError(f"Hugging Face error: {data['error']}")
-                raise RuntimeError(f"Unexpected Hugging Face response: {data}")
-            except httpx.HTTPStatusError as e:
-                status = e.response.status_code if e.response is not None else None
-                if status in (401, 403, 404):
-                    # Provide clearer guidance, don't retry these by default
-                    if status == 401:
+        for use_pipeline in endpoint_options:
+            url = get_api_url("huggingface", model, use_pipeline_endpoint=use_pipeline)
+            for attempt in range(max_attempts):
+                try:
+                    response = client.post(url, headers=build_headers(api_key, "huggingface"), json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+                    # Typical format: [{"generated_text": "..."}]
+                    if isinstance(data, list) and data:
+                        first = data[0]
+                        if isinstance(first, dict) and "generated_text" in first:
+                            return str(first["generated_text"]).strip()
+                    # Some endpoints might return dict
+                    if isinstance(data, dict):
+                        if "generated_text" in data:
+                            return str(data["generated_text"]).strip()
+                        # Some models return {'error': '...'} with 200; treat as error
+                        if "error" in data:
+                            raise RuntimeError(f"Hugging Face error: {data['error']}")
+                    raise RuntimeError(f"Unexpected Hugging Face response: {data}")
+                except httpx.HTTPStatusError as e:
+                    status = e.response.status_code if e.response is not None else None
+                    if status == 404 and use_pipeline: # Only retry 404 if it was pipeline endpoint
+                        log_message(f"HF 404 Not Found for pipeline endpoint {url}; trying direct model endpoint.")
+                        break # Break inner loop, try next endpoint option
+                    elif status in (401, 403): # Clear guidance for these, no retry
                         msg = "Hugging Face 401 Unauthorized: Check HUGGINGFACE_API_KEY in this shell."
-                    elif status == 403:
-                        msg = "Hugging Face 403 Forbidden: Accept model terms or ensure access."
-                    else:
-                        msg = "Hugging Face 404 Not Found: Model repo ID invalid or not served via serverless."
-                    log_message(msg)
-                    raise
-                if attempt < max_attempts - 1 and _should_retry(status, e):
-                    log_message(f"HF retryable HTTP error {status}; retrying (attempt {attempt+2}/{max_attempts})")
-                    _sleep_backoff(attempt)
-                    continue
-                last_exc = e
-                break
-            except Exception as e:
-                if attempt < max_attempts - 1 and _should_retry(None, e):
-                    log_message(f"HF retryable network error; retrying (attempt {attempt+2}/{max_attempts}) - {e}")
-                    _sleep_backoff(attempt)
-                    continue
-                last_exc = e
-                break
-    if last_exc:
-        raise last_exc
+                        if status == 403:
+                            msg = "Hugging Face 403 Forbidden: Accept model terms or ensure access."
+                        log_message(msg)
+                        raise
+                    
+                    if attempt < max_attempts - 1 and _should_retry(status, e):
+                        log_message(f"HF retryable HTTP error {status}; retrying (attempt {attempt+2}/{max_attempts})")
+                        _sleep_backoff(attempt)
+                        continue
+                    last_exc = e
+                    break
+                except Exception as e:
+                    if attempt < max_attempts - 1 and _should_retry(None, e):
+                        log_message(f"HF retryable network error; retrying (attempt {attempt+2}/{max_attempts}) - {e}")
+                        _sleep_backoff(attempt)
+                        continue
+                    last_exc = e
+                    break
+            if last_exc: # If inner loop broke due to unretryable error or exhausted attempts
+                raise last_exc
+
     raise RuntimeError("Hugging Face request failed for unknown reasons")
 
 
@@ -629,7 +637,7 @@ if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
 
     
-S
+
 
 
 
