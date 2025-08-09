@@ -147,9 +147,9 @@ def _send_via_huggingface_with_retry(
     messages: List[Dict[str, str]],
     api_key: str,
     temperature: Optional[float],
-    ) -> str:
-
-    url = f"https://api-inference.huggingface.co/pipeline/text-generation/{model}"
+) -> str:
+    # CORRECTED ENDPOINT (use base model URL)
+    url = f"https://api-inference.huggingface.co/models/{model}"
     headers = build_headers(api_key, "huggingface")
     prompt = _build_prompt_from_messages(messages)
     
@@ -157,78 +157,77 @@ def _send_via_huggingface_with_retry(
         "inputs": prompt,
         "parameters": {
             "return_full_text": False,
-            "max_new_tokens": 512,  
-        },
-        "options": {
-            "wait_for_model": True,
-            "use_cache": True
+            "max_new_tokens": 512,
         }
     }
+    
     if temperature is not None:
         payload["parameters"]["temperature"] = float(temperature)
-    # Reasonable default
-    payload["parameters"]["max_new_tokens"] = 512
-
-    # Debugging: Print the payload before sending
-    log_message(f"Sending HF payload: {payload}")
 
     max_attempts = 5
-    
-    # Try with pipeline endpoint first, then fall back to generic model endpoint on 404
-    endpoint_options = [True, False] # True for /pipeline/text-generation, False for /models
-
     with create_client() as client:
         last_exc: Optional[Exception] = None
-        for use_pipeline in endpoint_options:
-            url = get_api_url("huggingface", model, use_pipeline_endpoint=use_pipeline)
-            for attempt in range(max_attempts):
-                try:
-                    response = client.post(url, headers=build_headers(api_key, "huggingface"), json=payload)
-                    response.raise_for_status()
-                    data = response.json()
-                    # Typical format: [{"generated_text": "..."}]
-                    if isinstance(data, list) and data:
-                        first = data[0]
-                        if isinstance(first, dict) and "generated_text" in first:
-                            return str(first["generated_text"]).strip()
-                    # Some endpoints might return dict
-                    if isinstance(data, dict):
-                        if "generated_text" in data:
-                            return str(data["generated_text"]).strip()
-                        # Some models return {'error': '...'} with 200; treat as error
-                        if "error" in data:
-                            raise RuntimeError(f"Hugging Face error: {data['error']}")
-                    raise RuntimeError(f"Unexpected Hugging Face response: {data}")
-                except httpx.HTTPStatusError as e:
-                    status = e.response.status_code if e.response is not None else None
-                    if status == 404 and use_pipeline: # Only retry 404 if it was pipeline endpoint
-                        log_message(f"HF 404 Not Found for pipeline endpoint {url}; trying direct model endpoint.")
-                        break # Break inner loop, try next endpoint option
-                    elif status in (401, 403): # Clear guidance for these, no retry
-                        msg = "Hugging Face 401 Unauthorized: Check HUGGINGFACE_API_KEY in this shell."
-                        if status == 403:
-                            msg = "Hugging Face 403 Forbidden: Accept model terms or ensure access."
-                        log_message(msg)
-                        raise
+        for attempt in range(max_attempts):
+            try:
+                response = client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                
+                # Handle different response formats
+                if isinstance(data, list) and data:
+                    first = data[0]
+                    if isinstance(first, dict) and "generated_text" in first:
+                        return str(first["generated_text"]).strip()
+                
+                if isinstance(data, dict):
+                    if "generated_text" in data:
+                        return str(data["generated_text"]).strip()
+                    if "error" in data:
+                        error_msg = data.get("error", "Unknown error")
+                        raise RuntimeError(f"Hugging Face error: {error_msg}")
+                
+                raise RuntimeError(f"Unexpected Hugging Face response: {data}")
+                
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                # Enhanced error messages
+                if status == 401:
+                    # Verify token validity
+                    token_debug = f"Token used: {api_key[:4]}...{api_key[-4:]}" if api_key else "No token provided"
+                    msg = f"Hugging Face 401 Unauthorized:\n- Check HUGGINGFACE_API_KEY\n- Verify token at https://huggingface.co/settings/tokens\n{token_debug}"
+                    log_message(msg)
+                    raise PermissionError(msg) from e
+                elif status == 404:
+                    # Verify model availability
+                    msg = (f"Hugging Face 404 Not Found for model: {model}\n"
+                           "- Check model ID is correct\n"
+                           "- Verify model is available for inference: https://huggingface.co/models?pipeline_tag=text-generation")
+                    log_message(msg)
+                    raise FileNotFoundError(msg) from e
+                elif status == 503:
+                    # Model loading handling
+                    wait_time = 10 * (attempt + 1)
+                    msg = f"Model is loading, retrying in {wait_time}s (attempt {attempt+1}/{max_attempts})"
+                    log_message(msg)
+                    time.sleep(wait_time)
+                    continue
                     
-                    if attempt < max_attempts - 1 and _should_retry(status, e):
-                        log_message(f"HF retryable HTTP error {status}; retrying (attempt {attempt+2}/{max_attempts})")
-                        _sleep_backoff(attempt)
-                        continue
-                    last_exc = e
-                    break
-                except Exception as e:
-                    if attempt < max_attempts - 1 and _should_retry(None, e):
-                        log_message(f"HF retryable network error; retrying (attempt {attempt+2}/{max_attempts}) - {e}")
-                        _sleep_backoff(attempt)
-                        continue
-                    last_exc = e
-                    break
-            if last_exc: # If inner loop broke due to unretryable error or exhausted attempts
-                raise last_exc
-
-    raise RuntimeError("Hugging Face request failed for unknown reasons")
-
+                if attempt < max_attempts - 1 and _should_retry(status, e):
+                    log_message(f"HF retryable HTTP error {status}; retrying (attempt {attempt+2}/{max_attempts})")
+                    _sleep_backoff(attempt)
+                    continue
+                last_exc = e
+                break
+            except Exception as e:
+                if attempt < max_attempts - 1 and _should_retry(None, e):
+                    log_message(f"HF retryable network error; retrying (attempt {attempt+2}/{max_attempts}) - {e}")
+                    _sleep_backoff(attempt)
+                    continue
+                last_exc = e
+                break
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Hugging Face request failed after retries")
 
 def send_chat_request_with_messages(
     model: str,
