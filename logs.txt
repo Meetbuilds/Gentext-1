@@ -12,3 +12,17 @@ For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/St
 For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
 [2025-08-08_21-40-51] HTTP error: Client error '401 Unauthorized' for url 'https://openrouter.ai/api/v1/chat/completions'
 For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[2025-08-08_21-46-55] HTTP error: Client error '402 Payment Required' for url 'https://api.deepseek.com/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/402
+[2025-08-08_21-46-57] HTTP error: Client error '400 Bad Request' for url 'https://api.deepseek.com/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400
+[2025-08-08_23-58-41] HTTP error: Client error '404 Not Found' for url 'https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
+[2025-08-09_00-00-40] HTTP error: Client error '404 Not Found' for url 'https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
+[2025-08-09_12-49-05] HTTP error: Client error '404 Not Found' for url 'https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
+[2025-08-09_12-52-49] HTTP error: Client error '401 Unauthorized' for url 'https://api-inference.huggingface.co/models/HuggingFaceH4/gpt-oss-120b'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+[2025-08-09_12-56-44] HTTP error: Client error '401 Unauthorized' for url 'https://api-inference.huggingface.co/models/TinyLlama/TinyLlama-1.1B-Chat-v1.0'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401

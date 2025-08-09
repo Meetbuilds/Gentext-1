@@ -38,9 +38,13 @@ def build_headers(api_key: Optional[str], provider: str) -> dict:
     return headers
 
 
-def get_api_url(provider: str) -> str:
+def get_api_url(provider: str, model: Optional[str] = None) -> str:
     if provider == "deepseek":
         return "https://api.deepseek.com/v1/chat/completions"
+    if provider == "huggingface":
+        if not model:
+            raise ValueError("Model is required for Hugging Face requests")
+        return f"https://api-inference.huggingface.co/models/{model}"
     # default to openrouter
     return "https://openrouter.ai/api/v1/chat/completions"
 
@@ -48,19 +52,23 @@ def get_api_url(provider: str) -> str:
 def get_api_key(provider: str) -> Optional[str]:
     if provider == "deepseek":
         return os.getenv("DEEPSEEK_API_KEY")
+    if provider == "huggingface":
+        return os.getenv("HUGGINGFACE_API_KEY")
     return os.getenv("OPENROUTER_API_KEY")
 
 
 def resolve_provider(arg_provider: Optional[str]) -> str:
-    if arg_provider and arg_provider in {"openrouter", "deepseek"}:
+    if arg_provider and arg_provider in {"openrouter", "deepseek", "huggingface"}:
         return arg_provider
-    # auto mode
+    # auto mode: prefer explicit keys in this order
+    if os.getenv("HUGGINGFACE_API_KEY"):
+        return "huggingface"
     if os.getenv("OPENROUTER_API_KEY"):
         return "openrouter"
     if os.getenv("DEEPSEEK_API_KEY"):
         return "deepseek"
     # default
-    return "openrouter"
+    return "huggingface"
 
 
 def create_client(timeout_seconds: int = 120) -> httpx.Client:
@@ -81,11 +89,12 @@ def send_chat_request(
     return send_chat_request_with_messages(model, messages, api_key, temperature)
 
 
+# Retry/backoff helpers (used only for Hugging Face provider)
+
 def _should_retry(status_code: Optional[int], exception: Exception) -> bool:
     retryable_status = {429, 408, 500, 502, 503, 504}
     if status_code is not None and status_code in retryable_status:
         return True
-    # Network-level issues
     if isinstance(exception, (
         httpx.TimeoutException,
         httpx.ReadError,
@@ -99,9 +108,97 @@ def _should_retry(status_code: Optional[int], exception: Exception) -> bool:
 
 def _sleep_backoff(attempt_index: int, base: float = 1.0, cap: float = 20.0) -> None:
     delay = min(cap, base * (2 ** attempt_index))
-    # Add jitter [0.5, 1.5) multiplier
     jitter = 0.5 + random.random()
     time.sleep(delay * jitter)
+
+
+def _build_prompt_from_messages(messages: List[Dict[str, str]]) -> str:
+    # Simple, generic chat-to-text prompt conversion
+    # If there is a system message, prepend it as instructions.
+    system_parts: List[str] = []
+    conversation_parts: List[str] = []
+    for message in messages:
+        role = message.get("role", "user")
+        content = message.get("content", "").strip()
+        if not content:
+            continue
+        if role == "system":
+            system_parts.append(content)
+        elif role == "user":
+            conversation_parts.append(f"User: {content}")
+        elif role == "assistant":
+            conversation_parts.append(f"Assistant: {content}")
+        else:
+            conversation_parts.append(f"{role.capitalize()}: {content}")
+    system_block = "\n\n".join(system_parts).strip()
+    convo_block = "\n".join(conversation_parts).strip()
+    if system_block and convo_block:
+        return f"{system_block}\n\n{convo_block}\nAssistant:"
+    if convo_block:
+        return f"{convo_block}\nAssistant:"
+    return system_block or "Assistant:"
+
+
+def _send_via_huggingface_with_retry(
+    model: str,
+    messages: List[Dict[str, str]],
+    api_key: str,
+    temperature: Optional[float],
+) -> str:
+    url = get_api_url("huggingface", model)
+    headers = build_headers(api_key, "huggingface")
+    prompt = _build_prompt_from_messages(messages)
+    payload: Dict[str, Any] = {
+        "inputs": prompt,
+        "parameters": {
+            "return_full_text": False,
+            "max_new_tokens": 512,
+        },
+        "options": {
+            "wait_for_model": True
+        }
+    }
+    if temperature is not None:
+        payload["parameters"]["temperature"] = float(temperature)
+
+    max_attempts = 5
+    with create_client() as client:
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_attempts):
+            try:
+                response = client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                data = response.json()
+                # Typical format: [{"generated_text": "..."}]
+                if isinstance(data, list) and data:
+                    first = data[0]
+                    if isinstance(first, dict) and "generated_text" in first:
+                        return str(first["generated_text"]).strip()
+                # Some endpoints might return dict
+                if isinstance(data, dict):
+                    if "generated_text" in data:
+                        return str(data["generated_text"]).strip()
+                    if "error" in data:
+                        raise RuntimeError(f"Hugging Face error: {data['error']}")
+                raise RuntimeError(f"Unexpected Hugging Face response: {data}")
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code if e.response is not None else None
+                if attempt < max_attempts - 1 and _should_retry(status, e):
+                    log_message(f"HF retryable HTTP error {status}; retrying (attempt {attempt+2}/{max_attempts})")
+                    _sleep_backoff(attempt)
+                    continue
+                last_exc = e
+                break
+            except Exception as e:
+                if attempt < max_attempts - 1 and _should_retry(None, e):
+                    log_message(f"HF retryable network error; retrying (attempt {attempt+2}/{max_attempts}) - {e}")
+                    _sleep_backoff(attempt)
+                    continue
+                last_exc = e
+                break
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Hugging Face request failed for unknown reasons")
 
 
 def send_chat_request_with_messages(
@@ -109,8 +206,13 @@ def send_chat_request_with_messages(
     messages: List[Dict[str, str]],
     api_key: str,
     temperature: Optional[float] = None,
-    provider: str = "openrouter",
+    provider: str = "huggingface",
 ) -> str:
+    # Provider-specific dispatch: only Hugging Face uses retries/backoff now
+    if provider == "huggingface":
+        return _send_via_huggingface_with_retry(model, messages, api_key, temperature)
+
+    # OpenRouter / DeepSeek: simple direct call, no backoff
     payload = {
         "model": model,
         "messages": messages,
@@ -121,33 +223,12 @@ def send_chat_request_with_messages(
     api_url = get_api_url(provider)
     headers = build_headers(api_key, provider)
 
-    max_attempts = 5
     with create_client() as client:
-        last_exc: Optional[Exception] = None
-        for attempt in range(max_attempts):
-            try:
-                response = client.post(api_url, headers=headers, json=payload)
-                response.raise_for_status()
-                data = response.json()
-                return data["choices"][0]["message"]["content"].strip()
-            except httpx.HTTPStatusError as e:
-                status = e.response.status_code if e.response is not None else None
-                if attempt < max_attempts - 1 and _should_retry(status, e):
-                    log_message(f"Retryable HTTP error {status}; backing off and retrying (attempt {attempt+2}/{max_attempts})")
-                    _sleep_backoff(attempt)
-                    continue
-                last_exc = e
-                break
-            except Exception as e:
-                if attempt < max_attempts - 1 and _should_retry(None, e):
-                    log_message(f"Retryable network error; backing off and retrying (attempt {attempt+2}/{max_attempts}) - {e}")
-                    _sleep_backoff(attempt)
-                    continue
-                last_exc = e
-                break
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("Failed to send chat request for unknown reasons")
+        response = client.post(api_url, headers=headers, json=payload)
+        response.raise_for_status()
+        data = response.json()
+
+    return data["choices"][0]["message"]["content"].strip()
 
 
 def send_text_to_telegram(text: str, bot_token: str, chat_id: str, send_as_document: bool = False) -> bool:
@@ -381,12 +462,12 @@ def chat_from_local_prompts(
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Send system/user prompts from files to OpenRouter Chat API",
+        description="Send system/user prompts from files to LLMs via selected provider",
     )
     parser.add_argument(
         "--model",
-        default="openrouter/auto",
-        help="Model ID to use (default: openrouter/auto)",
+        default="HuggingFaceH4/zephyr-7b-beta",
+        help="Model ID to use (provider-specific). Default for HF: HuggingFaceH4/zephyr-7b-beta",
     )
     parser.add_argument(
         "--dir",
@@ -417,7 +498,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--free-only",
         action="store_true",
-        help="Automatically choose a free model and use it for this request",
+        help="Automatically choose a free model and use it for this request (OpenRouter only)",
     )
     parser.add_argument(
         "--no-telegram",
@@ -431,7 +512,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--provider",
-        choices=["openrouter", "deepseek"],
+        choices=["huggingface", "openrouter", "deepseek"],
         help="API provider to use. If omitted, auto-detects based on available API keys.",
     )
     return parser.parse_args(argv)
@@ -461,20 +542,6 @@ def main(argv: list[str]) -> int:
                 print(f"- {mid}")
         print("\nUse one with: python openrouter_chat.py --model <model-id>")
         return 0
-    system_path = os.path.join(args.dir, args.system)
-    user_path = os.path.join(args.dir, args.user)
-
-    try:
-        system_text = read_text_file(system_path)
-        user_text = read_text_file(user_path)
-    except FileNotFoundError as e:
-        print(str(e), file=sys.stderr)
-        return 1
-
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        print("OPENROUTER_API_KEY is not set. Please set it in your environment.", file=sys.stderr)
-        return 1
 
     # Determine model selection strategy
     selected_model = args.model
@@ -547,6 +614,8 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+
+    
 
 
 
