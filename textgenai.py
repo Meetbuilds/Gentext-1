@@ -5,7 +5,7 @@ import datetime
 
 #configuration
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-generation_config = {'temperature':0.9, 'top_p':0.95, 'max_output_tokens':2000}
+generation_config = {'temperature':0.9, 'top_p':0.95, 'max_output_tokens':10000}
  
 final_prompt = []
 
