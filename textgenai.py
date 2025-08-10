@@ -9,7 +9,7 @@ generation_config = {'temperature':0.9, 'top_p':0.95, 'max_output_tokens':2000}
  
 final_prompt = []
 
-prompt_file_path = r"C:\Users\meetd\Desktop\Pro1\system_prompt.txt"
+prompt_file_path = r"C:\Users\meetd\Desktop\Pro1\sys_prompt.txt"
 output_directory = r"C:\Users\meetd\Desktop\Pro1\generated_texts"
 user_prompt_file_path = r"C:\Users\meetd\Desktop\Pro1\user_prompt.txt"
 
@@ -18,7 +18,7 @@ try:
     if os.path.exists(prompt_file_path):
         with open(prompt_file_path, "r", encoding='utf-8') as f:
             final_prompt.append(f.read())
-            print("Using system prompt from 'system_prompt.txt'.")
+            print("Using system prompt from 'sys_prompt.txt'.")
     
     # Check for and add the user prompt if it exists and is not empty
     if os.path.exists(user_prompt_file_path) and os.path.getsize(user_prompt_file_path) > 0:
