@@ -1,7 +1,9 @@
 import tweepy
 import os
 import glob
+import sys
 import time
+from datetime import datetime
 
 X_API_KEY = os.getenv("X_API_KEY")
 API_SECRET_KEY = os.getenv("API_SECRET_KEY")
@@ -9,7 +11,6 @@ ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 ACCESS_TOKEN_SECRET =os.getenv("ACCESS_TOKEN_SECRET") 
 
 TARGET_DIRECTORY = "."
-
 
 def get_api_client():
     """Authenticates with the X API and returns a client object."""
@@ -31,7 +32,6 @@ def get_api_client():
     except Exception as e:
         print(f"❌ Error during authentication: {e}")
         return None
-
 
 def find_most_recent_file(directory):
     """
@@ -119,18 +119,38 @@ def post_to_x(client, text_to_post):
         print(f"❌ An unexpected error occurred: {e}")
 
 def main():
-    """Main function to run the script logic."""
+    """
+    Main function to run the script logic.
+    Usage:
+    - python main.py : Automatically finds and posts the most recent file.
+    - python main.py <filename.txt> : Posts the content of the specified file.
+    """
     print("--- Starting Automated X Poster ---")
     
+    file_to_post = None
+
+    # Check if a specific filename was provided as a command-line argument
+    if len(sys.argv) > 1:
+        # Manual mode: Use the provided filename
+        file_to_post = sys.argv[1]
+        print(f"📌 Manual mode: Using specified file: {file_to_post}")
+        if not os.path.exists(file_to_post):
+            print(f"❌ Error: The specified file '{file_to_post}' was not found.")
+            return
+    else:
+        # Automatic mode: Find the most recent file
+        print("🔄 Automatic mode: Finding the most recent file...")
+        file_to_post = find_most_recent_file(TARGET_DIRECTORY)
+
+    if not file_to_post:
+        print("🛑 No file to process. Exiting.")
+        return
+
     client = get_api_client()
     if not client:
         return # Stop if authentication fails
 
-    latest_file_path = find_most_recent_file(TARGET_DIRECTORY)
-    if not latest_file_path:
-        return # Stop if no file is found
-
-    content = read_file_content(latest_file_path)
+    content = read_file_content(file_to_post)
     if not content:
         return # Stop if file is empty or unreadable
 
