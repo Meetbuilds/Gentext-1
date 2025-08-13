@@ -32,23 +32,55 @@ def get_api_client():
         print(f"❌ Error during authentication: {e}")
         return None
 
+
 def find_most_recent_file(directory):
-    """Finds the most recently modified .txt file in a given directory."""
+    """
+    Finds the most recent file based on the timestamp in its filename.
+    Assumes filename format is 'Response_YYYY-MM-DD_HH-MM-SS.txt'.
+    """
     try:
-        # Create a pattern to find all .txt files in the directory
-        search_pattern = os.path.join(directory, '*.txt')
+        # Create a pattern to find all response files
+        search_pattern = os.path.join(directory, 'Response_*.txt')
         
         # Get a list of all files matching the pattern
-        text_files = glob.glob(search_pattern)
+        files = glob.glob(search_pattern)
         
-        if not text_files:
-            print(f"🤔 No .txt files found in the directory: {os.path.abspath(directory)}")
+        if not files:
+            print(f"🤔 No files with format 'Response_*.txt' found in the directory: {os.path.abspath(directory)}")
             return None
-            
-        # Find the file with the latest modification time
-        latest_file = max(text_files, key=os.path.getmtime)
-        print(f"📄 Found most recent file: {latest_file}")
+        
+        latest_file = None
+        latest_time = None
+        
+        # Define the timestamp format
+        # Corresponds to "%Y-%m-%d_%H-%M-%S"
+        time_format = "%Y-%m-%d_%H-%M-%S"
+
+        for file_path in files:
+            try:
+                # Extract the filename from the full path
+                filename = os.path.basename(file_path)
+                # Extract the timestamp part of the filename
+                # It's between "Response_" and ".txt"
+                timestamp_str = filename.replace("Response_", "").replace(".txt", "")
+                
+                # Convert the string to a datetime object
+                file_time = datetime.strptime(timestamp_str, time_format)
+                
+                # Compare with the latest time found so far
+                if latest_time is None or file_time > latest_time:
+                    latest_time = file_time
+                    latest_file = file_path
+            except ValueError:
+                # This will catch files that match the glob pattern but not the timestamp format
+                print(f"⚠️ Skipping file with incorrect format: {filename}")
+                continue
+
+        if latest_file:
+            print(f"📄 Found most recent file: {latest_file}")
+        
         return latest_file
+        
     except Exception as e:
         print(f"❌ Error finding files: {e}")
         return None

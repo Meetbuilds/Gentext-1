@@ -31,7 +31,7 @@ try:
         response = model.generate_content(final_prompt) # Pass the list of prompts
         
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        output_filename = f"model_response_{timestamp}.txt"
+        output_filename = f"Response_{timestamp}.txt"
         output_file_path = os.path.join(output_directory, output_filename)
         
         response_content = response.text
