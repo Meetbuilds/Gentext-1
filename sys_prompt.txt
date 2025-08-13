@@ -24,8 +24,9 @@ feel forced.
 big tweet =800-1100 characters,
 medium tweet = 400-770 characters,
 small tweet = 280-300 characters,
-very small = Number of characters that X posts allow without any subcription. 
-- No strict rules, slight changes are accepted
+-Slight changes in sizes are accepted
+very small = 280 characters (strictly)
+
 ).
 You can give a response in 4 sizes and one of the following topics. All the responses should be mostly informal and like if a person is posting a tweet and 
 must not feel like AI generated.
