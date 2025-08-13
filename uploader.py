@@ -10,7 +10,7 @@ API_SECRET_KEY = os.getenv("API_SECRET_KEY")
 ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
 ACCESS_TOKEN_SECRET =os.getenv("ACCESS_TOKEN_SECRET") 
 
-TARGET_DIRECTORY = "."
+TARGET_DIRECTORY = r"C:\Users\meetd\Desktop\Pro1\generated_texts"
 
 def get_api_client():
     """Authenticates with the X API and returns a client object."""
